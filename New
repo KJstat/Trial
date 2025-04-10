@@ -1,0 +1,175 @@
+import torch
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from transformers import XLMRobertaTokenizer, XLMRobertaForSequenceClassification
+from transformers import pipeline
+from bertviz import head_view
+import pandas as pd
+from matplotlib.colors import LinearSegmentedColormap
+
+# Set up the device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
+# Load the model and tokenizer
+model_name = "xlm-roberta-base"
+tokenizer = XLMRobertaTokenizer.from_pretrained(model_name)
+model = XLMRobertaForSequenceClassification.from_pretrained(model_name, num_labels=3)
+model.to(device)
+
+# Create a sentiment analysis pipeline
+sentiment_pipeline = pipeline("sentiment-analysis", model=model, tokenizer=tokenizer, device=0 if torch.cuda.is_available() else -1)
+
+def get_attention_scores(text, model, tokenizer):
+    """Get attention scores for all layers and heads from the model."""
+    # Tokenize input
+    inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+    
+    # Get model outputs with attention matrices
+    with torch.no_grad():
+        outputs = model(**inputs, output_attentions=True)
+    
+    # Get attention outputs and convert to numpy arrays
+    attentions = outputs.attentions
+    attention_matrices = [attention.cpu().numpy() for attention in attentions]
+    
+    # Get token ids and convert to tokens
+    input_ids = inputs["input_ids"][0].cpu().numpy()
+    tokens = tokenizer.convert_ids_to_tokens(input_ids)
+    
+    return attention_matrices, tokens, outputs.logits
+
+def plot_attention_heatmap(attention_matrices, tokens, layer_idx, head_idx, cmap='viridis'):
+    """Plot attention heatmap for a specific layer and attention head."""
+    # Get attention matrix for specific layer and head
+    attention = attention_matrices[layer_idx][0, head_idx]
+    
+    # Create a figure
+    plt.figure(figsize=(12, 10))
+    
+    # Plot heatmap
+    sns.heatmap(attention, xticklabels=tokens, yticklabels=tokens, cmap=cmap)
+    
+    plt.title(f"Attention Heatmap - Layer {layer_idx+1}, Head {head_idx+1}")
+    plt.ylabel("Query Tokens")
+    plt.xlabel("Key Tokens")
+    plt.xticks(rotation=90)
+    plt.yticks(rotation=0)
+    plt.tight_layout()
+    
+    return plt
+
+def plot_attention_across_layers_heads(attention_matrices, tokens, selected_token_idx=None):
+    """Plot average attention for all layers and heads, with optional focus on a specific token."""
+    num_layers = len(attention_matrices)
+    num_heads = attention_matrices[0].shape[1]
+    
+    layer_head_attention = np.zeros((num_layers, num_heads))
+    
+    # Calculate average attention or attention for specific token
+    for layer_idx in range(num_layers):
+        for head_idx in range(num_heads):
+            if selected_token_idx is not None:
+                # Focus on attention from the selected token to all other tokens
+                layer_head_attention[layer_idx, head_idx] = attention_matrices[layer_idx][0, head_idx, selected_token_idx].mean()
+            else:
+                # Average attention across all tokens
+                layer_head_attention[layer_idx, head_idx] = attention_matrices[layer_idx][0, head_idx].mean()
+    
+    # Create custom colormap: blue for low values, red for high values
+    custom_cmap = LinearSegmentedColormap.from_list('blue_red', ['blue', 'white', 'red'], N=256)
+    
+    # Plot heatmap
+    plt.figure(figsize=(12, 8))
+    
+    if selected_token_idx is not None:
+        title = f"Attention from token '{tokens[selected_token_idx]}' across layers and heads"
+    else:
+        title = "Average attention across layers and heads"
+    
+    sns.heatmap(layer_head_attention, cmap=custom_cmap, 
+                xticklabels=[f"Head {i+1}" for i in range(num_heads)],
+                yticklabels=[f"Layer {i+1}" for i in range(num_layers)])
+    
+    plt.title(title)
+    plt.ylabel("Layers")
+    plt.xlabel("Attention Heads")
+    plt.tight_layout()
+    
+    return plt
+
+def analyze_sentiment_with_attention(text):
+    """Analyze sentiment and visualize attention patterns for the given text."""
+    print(f"Analyzing sentiment for: '{text}'")
+    
+    # Get sentiment prediction
+    sentiment_result = sentiment_pipeline(text)[0]
+    print(f"Sentiment: {sentiment_result['label']} (Score: {sentiment_result['score']:.4f})")
+    
+    # Get attention scores
+    attention_matrices, tokens, logits = get_attention_scores(text, model, tokenizer)
+    
+    # Print tokens for reference
+    print("\nTokens:")
+    for i, token in enumerate(tokens):
+        print(f"{i}: {token}")
+    
+    # Number of layers and heads
+    num_layers = len(attention_matrices)
+    num_heads = attention_matrices[0].shape[1]
+    print(f"\nModel has {num_layers} layers with {num_heads} attention heads each")
+    
+    # Plot average attention across all layers and heads
+    plt_avg = plot_attention_across_layers_heads(attention_matrices, tokens)
+    plt_avg.savefig("avg_attention_heatmap.png")
+    plt_avg.show()
+    
+    # Find important tokens based on average attention
+    avg_attention_per_token = np.zeros(len(tokens))
+    for layer_idx in range(num_layers):
+        for head_idx in range(num_heads):
+            avg_attention_per_token += attention_matrices[layer_idx][0, head_idx].mean(axis=0)
+    
+    # Get indices of top 3 tokens by attention
+    top_token_indices = np.argsort(avg_attention_per_token)[-3:][::-1]
+    print("\nTop tokens by attention:")
+    for idx in top_token_indices:
+        print(f"Token '{tokens[idx]}' (index {idx}) - Average attention: {avg_attention_per_token[idx]:.4f}")
+    
+    # Plot attention from the most important token
+    most_important_token_idx = top_token_indices[0]
+    plt_token = plot_attention_across_layers_heads(attention_matrices, tokens, most_important_token_idx)
+    plt_token.savefig(f"token_{most_important_token_idx}_attention.png")
+    plt_token.show()
+    
+    # Plot attention heatmaps for specific layers and heads
+    # Select a few interesting layers/heads to visualize
+    interesting_combinations = [
+        (0, 0),  # First layer, first head
+        (num_layers // 2, num_heads // 2),  # Middle layer, middle head
+        (num_layers - 1, num_heads - 1)  # Last layer, last head
+    ]
+    
+    for layer_idx, head_idx in interesting_combinations:
+        plt_heatmap = plot_attention_heatmap(attention_matrices, tokens, layer_idx, head_idx)
+        plt_heatmap.savefig(f"attention_layer{layer_idx+1}_head{head_idx+1}.png")
+        plt_heatmap.show()
+    
+    # Plot attention across tokens for specific layers
+    special_layers = [0, num_layers//2, num_layers-1]  # First, middle, last layers
+    
+    plt.figure(figsize=(15, 10))
+    for i, layer_idx in enumerate(special_layers):
+        avg_attention = np.mean(attention_matrices[layer_idx][0], axis=0)  # Average across heads
+        plt.subplot(len(special_layers), 1, i+1)
+        plt.bar(range(len(tokens)), avg_attention.mean(axis=0))
+        plt.title(f"Layer {layer_idx+1} - Average attention per token")
+        plt.xticks(range(len(tokens)), tokens, rotation=90)
+        plt.tight_layout()
+    
+    plt.savefig("attention_per_token.png")
+    plt.show()
+    
+    return attention_matrices, tokens
