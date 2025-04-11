@@ -173,3 +173,124 @@ def analyze_sentiment_with_attention(text):
     plt.show()
     
     return attention_matrices, tokens
+
+###################################################################
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from transformers import XLMRobertaModel, XLMRobertaTokenizer
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
+class XLMRobertaLayerwiseClassifier(nn.Module):
+    def __init__(self, model_name="xlm-roberta-base", num_classes=3):
+        super(XLMRobertaLayerwiseClassifier, self).__init__()
+        self.num_classes = num_classes
+        
+        # Load pre-trained XLM-RoBERTa model
+        self.roberta = XLMRobertaModel.from_pretrained(model_name, output_hidden_states=True)
+        
+        # Get the dimension of hidden states
+        self.hidden_size = self.roberta.config.hidden_size
+        
+        # Create a classification head for each layer
+        num_layers = self.roberta.config.num_hidden_layers + 1  # +1 for embedding layer
+        self.classifiers = nn.ModuleList([
+            nn.Linear(self.hidden_size, num_classes) for _ in range(num_layers)
+        ])
+        
+    def forward(self, input_ids, attention_mask=None):
+        # Get all hidden states from the model
+        outputs = self.roberta(input_ids=input_ids, attention_mask=attention_mask)
+        
+        # Get all hidden states (including embeddings)
+        all_hidden_states = outputs.hidden_states
+        
+        # For each layer, apply its corresponding classifier and softmax
+        layer_predictions = []
+        
+        for layer_idx, hidden_state in enumerate(all_hidden_states):
+            # Use CLS token representation [batch_size, hidden_size]
+            cls_output = hidden_state[:, 0, :]
+            
+            # Apply linear layer for this specific layer
+            logits = self.classifiers[layer_idx](cls_output)
+            
+            # Apply softmax to get probabilities
+            probs = F.softmax(logits, dim=1)
+            
+            layer_predictions.append(probs)
+            
+        return layer_predictions
+
+def analyze_layer_predictions(text, model, tokenizer, class_names, device):
+    # Prepare input
+    inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True).to(device)
+    
+    # Get predictions for each layer
+    with torch.no_grad():
+        layer_predictions = model(input_ids=inputs["input_ids"], 
+                                  attention_mask=inputs["attention_mask"])
+    
+    # Convert to numpy for easier handling
+    layer_predictions_np = [pred.cpu().numpy()[0] for pred in layer_predictions]
+    
+    # Create a DataFrame for easier visualization
+    layers = [f"Layer {i}" if i > 0 else "Embedding" for i in range(len(layer_predictions_np))]
+    
+    # Create a dictionary for the DataFrame
+    data = {
+        "Layer": layers
+    }
+    
+    for i, class_name in enumerate(class_names):
+        data[class_name] = [layer_pred[i] for layer_pred in layer_predictions_np]
+    
+    df = pd.DataFrame(data)
+    
+    return df
+
+def visualize_layer_predictions(df, class_names):
+    # Melt the DataFrame for easier plotting
+    df_melted = pd.melt(df, id_vars=["Layer"], value_vars=class_names, 
+                        var_name="Class", value_name="Probability")
+    
+    # Plot
+    plt.figure(figsize=(12, 6))
+    sns.lineplot(data=df_melted, x="Layer", y="Probability", hue="Class", marker="o")
+    plt.title("Class Probabilities Across Layers")
+    plt.xticks(rotation=45)
+    plt.grid(True, linestyle="--", alpha=0.7)
+    plt.tight_layout()
+    plt.show()
+    
+    # Heatmap for another perspective
+    plt.figure(figsize=(12, 6))
+    pivot_df = df.set_index("Layer")
+    sns.heatmap(pivot_df, annot=True, cmap="YlGnBu", fmt=".2f")
+    plt.title("Class Probabilities Heatmap Across Layers")
+    plt.tight_layout()
+    plt.show()
+    
+    # Show predicted class at each layer
+    predicted_classes = []
+    for _, row in df.iterrows():
+        class_probs = [row[class_name] for class_name in class_names]
+        predicted_class = class_names[np.argmax(class_probs)]
+        predicted_classes.append(predicted_class)
+    
+    df["Predicted Class"] = predicted_classes
+    
+    # Print when prediction changes
+    print("Layer-wise Predictions:")
+    prev_class = None
+    for i, pred_class in enumerate(predicted_classes):
+        layer_name = df.iloc[i]["Layer"]
+        if pred_class != prev_class:
+            print(f"{layer_name}: {pred_class} (Change)")
+        else:
+            print(f"{layer_name}: {pred_class}")
+        prev_class = pred_class
+    
+    return df
