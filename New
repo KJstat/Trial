@@ -34,6 +34,74 @@ def get_attention_scores(text, model, tokenizer):
     # Get attention outputs and convert to numpy arrays
     attentions = outputs.attentions
     attention_matrices = [attention.cpu().numpy() for attention in attentions]
+##############################
+def consolidate_vectors(key_to_words, word_to_vector, target_key, aggregation_method='sum'):
+    """
+    Consolidate vectors for all words associated with a target key.
+    
+    Parameters:
+    - key_to_words: Dictionary mapping keys to lists of words
+    - word_to_vector: Dictionary mapping words to vector tuples
+    - target_key: The key whose associated word vectors will be consolidated
+    - aggregation_method: How to combine vectors ('sum', 'average', 'max', 'min')
+    
+    Returns:
+    - Consolidated vector as a tuple
+    """
+    # Get all words associated with the target key
+    if target_key not in key_to_words:
+        return None
+    
+    words = key_to_words[target_key]
+    
+    # Collect vectors for all valid words
+    vectors = []
+    for word in words:
+        if word in word_to_vector:
+            vectors.append(word_to_vector[word])
+    
+    if not vectors:
+        return None
+    
+    # Convert tuples to lists for easier manipulation
+    vector_lists = [list(v) for v in vectors]
+    
+    # Get the length of vectors (assuming all have same length)
+    vector_length = len(vector_lists[0])
+    
+    # Perform the aggregation based on the specified method
+    if aggregation_method == 'sum':
+        result = [sum(v[i] for v in vector_lists) for i in range(vector_length)]
+    elif aggregation_method == 'average':
+        result = [sum(v[i] for v in vector_lists) / len(vectors) for i in range(vector_length)]
+    elif aggregation_method == 'max':
+        result = [max(v[i] for v in vector_lists) for i in range(vector_length)]
+    elif aggregation_method == 'min':
+        result = [min(v[i] for v in vector_lists) for i in range(vector_length)]
+    else:
+        raise ValueError(f"Unknown aggregation method: {aggregation_method}")
+    
+    return tuple(result)
+Here's an example of how to use this function:
+python# Example dictionaries
+key_to_words = {
+    'animals': ['cat', 'dog', 'bird'],
+    'colors': ['red', 'blue', 'green'],
+    'numbers': ['one', 'two', 'three']
+}
+
+word_to_vector = {
+    'cat': (1, 2, 3),
+    'dog': (4, 5, 6),
+    'bird': (7, 8, 9),
+    'red': (10, 20, 30),
+    'blue': (40, 50, 60),
+    'one': (100, 200, 300)
+}
+
+# Consolidate vectors for 'animals' key using default 'sum' method
+result = consolidate_vectors(key_to_words, word_to_vector, 'animals')
+print(f"Sum of vectors for 'animals': {result}")
     
     # Get token ids and convert to tokens
     input_ids = inputs["input_ids"][0].cpu().numpy()
