@@ -362,3 +362,173 @@ def visualize_layer_predictions(df, class_names):
         prev_class = pred_class
     
     return df
+
+
+#################
+import torch
+import numpy as np
+from transformers import XLMRobertaTokenizer, XLMRobertaModel
+import matplotlib.pyplot as plt
+
+# Load pre-trained XLM-RoBERTa model and tokenizer
+tokenizer = XLMRobertaTokenizer.from_pretrained('xlm-roberta-base')
+model = XLMRobertaModel.from_pretrained('xlm-roberta-base', output_attentions=True)
+
+def get_word_level_attention(sentences, target_word):
+    """
+    Extract word-level attention matrix from the final layer for a target word 
+    across a group of sentences.
+    
+    Args:
+        sentences (list): List of input sentences
+        target_word (str): Target word to extract attention for
+    
+    Returns:
+        dict: Word-level attention scores for each sentence
+    """
+    word_level_attentions = {}
+    
+    for i, sentence in enumerate(sentences):
+        # Tokenize the sentence
+        tokens = tokenizer.tokenize(sentence)
+        token_ids = tokenizer.encode(sentence, return_tensors='pt')
+        
+        # Get the mapping from tokens to original words
+        words = sentence.split()
+        word_to_tokens = {}
+        
+        # Get the tokens without special tokens for mapping
+        tokens_without_special = tokenizer.tokenize(sentence)
+        
+        # Map words to their corresponding tokens
+        word_idx = 0
+        token_idx = 0
+        current_word = ""
+        
+        while word_idx < len(words) and token_idx < len(tokens_without_special):
+            if tokens_without_special[token_idx].startswith('▁'):  # New word starts with this token
+                current_word = words[word_idx]
+                if current_word not in word_to_tokens:
+                    word_to_tokens[current_word] = []
+                word_to_tokens[current_word].append(token_idx + 1)  # +1 for [CLS] token
+                
+                # Check if this token represents the complete word or just a part
+                if current_word == tokens_without_special[token_idx].replace('▁', ''):
+                    word_idx += 1
+                    token_idx += 1
+                else:
+                    token_idx += 1
+            else:  # Continuation of previous word
+                if current_word not in word_to_tokens:
+                    word_to_tokens[current_word] = []
+                word_to_tokens[current_word].append(token_idx + 1)  # +1 for [CLS] token
+                token_idx += 1
+                
+                # Check if we've completed the current word
+                reconstructed = ''.join([tokens_without_special[t].replace('▁', '') 
+                                        for t in [t-1 for t in word_to_tokens[current_word]]])
+                if reconstructed == current_word:
+                    word_idx += 1
+        
+        # Run the model and get attention
+        with torch.no_grad():
+            outputs = model(token_ids)
+            
+        # Get the last layer's attention matrix
+        # Shape: [batch_size=1, num_heads, seq_length, seq_length]
+        last_layer_attention = outputs.attentions[-1].squeeze(0)
+        
+        # Average over attention heads
+        # Shape: [seq_length, seq_length]
+        avg_attention = last_layer_attention.mean(dim=0)
+        
+        # If the target word is present in the sentence
+        if target_word in word_to_tokens:
+            target_token_indices = word_to_tokens[target_word]
+            
+            # Get the attention from the target word to all other tokens
+            # First, average the attention from all subwords of the target word
+            target_attention = avg_attention[target_token_indices].mean(dim=0)
+            
+            # Convert token-level attention to word-level attention
+            word_attention = {}
+            for word, token_indices in word_to_tokens.items():
+                # Average attention to all subwords of this word
+                word_attention[word] = target_attention[token_indices].mean().item()
+            
+            word_level_attentions[i] = {
+                'sentence': sentence,
+                'attention': word_attention
+            }
+    
+    return word_level_attentions
+
+def visualize_word_attention(word_level_attentions, target_word):
+    """
+    Visualize word-level attention for a target word across sentences.
+    
+    Args:
+        word_level_attentions (dict): Word-level attention scores
+        target_word (str): Target word
+    """
+    plt.figure(figsize=(12, 8))
+    
+    for idx, data in word_level_attentions.items():
+        sentence = data['sentence']
+        attention = data['attention']
+        
+        # Sort words by attention score
+        words = list(attention.keys())
+        scores = [attention[w] for w in words]
+        
+        sorted_indices = np.argsort(scores)[::-1]  # Sort in descending order
+        sorted_words = [words[i] for i in sorted_indices]
+        sorted_scores = [scores[i] for i in sorted_indices]
+        
+        plt.subplot(len(word_level_attentions), 1, idx + 1)
+        plt.barh(sorted_words, sorted_scores)
+        plt.title(f"Sentence {idx+1}: {sentence}")
+        plt.xlabel("Attention Score")
+        plt.ylabel("Words")
+        plt.tight_layout()
+    
+    plt.suptitle(f"Word-level attention for '{target_word}'")
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.show()
+
+# Example usage
+sentences = [
+    "The new artificial intelligence model performs well on multiple tasks.",
+    "Researchers developed an advanced AI system with improved capabilities.",
+    "The performance of the model exceeded our expectations."
+]
+
+target_word = "model"
+word_attentions = get_word_level_attention(sentences, target_word)
+
+# Calculate global importance across all sentences
+all_words = set()
+for data in word_attentions.values():
+    all_words.update(data['attention'].keys())
+
+global_importance = {word: 0 for word in all_words}
+count = {word: 0 for word in all_words}
+
+for data in word_attentions.values():
+    for word, score in data['attention'].items():
+        global_importance[word] += score
+        count[word] += 1
+
+# Average the scores
+for word in global_importance:
+    if count[word] > 0:
+        global_importance[word] /= count[word]
+
+# Print global importance
+print(f"Global importance of features related to '{target_word}':")
+sorted_words = sorted(global_importance.items(), key=lambda x: x[1], reverse=True)
+for word, score in sorted_words:
+    print(f"{word}: {score:.4f}")
+
+# Visualize the attention for each sentence
+visualize_word_attention(word_attentions, target_word)
