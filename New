@@ -532,3 +532,54 @@ for word, score in sorted_words:
 
 # Visualize the attention for each sentence
 visualize_word_attention(word_attentions, target_word)
+
+###############
+import numpy as np
+import matplotlib.pyplot as plt
+
+def simulate_distribution(n, N, num_samples=100000, seed=42):
+    np.random.seed(seed)
+    
+    p = n / N
+    q = 1 - p
+
+    # Define support
+    k_vals = np.arange(0, N + 1)
+
+    # Compute unnormalized probabilities
+    unnormalized_probs = p * (q ** k_vals)
+
+    # Normalize
+    normalization = 1 - q ** (N + 1)
+    probs = unnormalized_probs / normalization
+
+    # Simulate samples
+    samples = np.random.choice(k_vals, size=num_samples, p=probs)
+
+    # Confidence intervals
+    ci_95 = np.percentile(samples, 95)
+    ci_99 = np.percentile(samples, 99)
+
+    # Plot histogram
+    plt.figure(figsize=(10, 6))
+    plt.hist(samples, bins=range(N + 2), density=True, alpha=0.7, color='skyblue', edgecolor='black')
+    plt.axvline(ci_95, color='red', linestyle='--', label=f'95% right-sided CI = {int(ci_95)}')
+    plt.axvline(ci_99, color='purple', linestyle='--', label=f'99% right-sided CI = {int(ci_99)}')
+    plt.title(f"Simulated Distribution of K (n={n}, N={N})")
+    plt.xlabel("k")
+    plt.ylabel("Probability")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+    return {
+        "distribution": list(zip(k_vals, probs)),
+        "samples": samples,
+        "ci_95": int(ci_95),
+        "ci_99": int(ci_99)
+    }
+
+# Example usage
+result = simulate_distribution(n=100, N=10000)
+print(f"95% right-sided confidence limit: {result['ci_95']}")
+print(f"99% right-sided confidence limit: {result['ci_99']}")
