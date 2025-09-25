@@ -1,3 +1,74 @@
+import xgboost as xgb
+import pandas as pd
+import numpy as np
+from sklearn.metrics import accuracy_score, roc_auc_score
+from sklearn.model_selection import train_test_split
+
+# --------------------------
+# Sample data creation
+# --------------------------
+np.random.seed(42)
+N = 1000
+
+df = pd.DataFrame({
+    "a": np.random.randn(N),
+    "b": np.random.randn(N),
+    "c": np.random.randn(N),
+    "target": np.random.randint(0, 2, size=N)
+})
+
+# Split into train and OOT (Out-of-Time) sets
+train_df, oot_df = train_test_split(df, test_size=0.2, shuffle=False)
+
+# --------------------------
+# Define features in two different orders
+# --------------------------
+features_order1 = ["a", "b", "c"]
+features_order2 = ["b", "c", "a"]
+
+# --------------------------
+# Train model 1 (a,b,c)
+# --------------------------
+X_train1 = train_df[features_order1]
+y_train = train_df["target"]
+
+model1 = xgb.XGBClassifier(
+    use_label_encoder=False,
+    eval_metric="logloss",
+    random_state=42
+)
+model1.fit(X_train1, y_train)
+
+# --------------------------
+# Train model 2 (b,c,a)
+# --------------------------
+X_train2 = train_df[features_order2]
+
+model2 = xgb.XGBClassifier(
+    use_label_encoder=False,
+    eval_metric="logloss",
+    random_state=42
+)
+model2.fit(X_train2, y_train)
+
+# --------------------------
+# Evaluate on OOT set
+# --------------------------
+X_oot1 = oot_df[features_order1]
+X_oot2 = oot_df[features_order2]
+y_oot = oot_df["target"]
+
+preds1 = model1.predict_proba(X_oot1)[:, 1]
+preds2 = model2.predict_proba(X_oot2)[:, 1]
+
+print("Model 1 (a,b,c):")
+print("  Accuracy:", accuracy_score(y_oot, preds1 > 0.5))
+print("  AUC:", roc_auc_score(y_oot, preds1))
+
+print("\nModel 2 (b,c,a):")
+print("  Accuracy:", accuracy_score(y_oot, preds2 > 0.5))
+print("  AUC:", roc_auc_score(y_oot, preds2))
+
 import numpy as np
 import pandas as pd
 import xgboost as xgb
